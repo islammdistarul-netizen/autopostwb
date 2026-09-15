@@ -1,0 +1,26 @@
+{
+  "host": "http://localhost:5000",
+  "apiBasePath": "/api/public/v1",
+  "apiKeyEnv": "POSTIZ_API_KEY",
+  "dispatchMode": "rest",
+  "cliCommand": "postiz",
+  "requestTimeoutMs": 120000,
+  "uploadTimeoutMs": 600000,
+  "channels": {
+    "reel": [],
+    "carousel": []
+  },
+  "channelSettings": {},
+  "channelDirectory": [],
+  "schedule": {
+    "timezone": "Europe/Moscow",
+    "reelSlots": [
+      "09:30",
+      "19:00"
+    ],
+    "carouselSlots": [
+      "13:00"
+    ],
+    "leadMinutes": 45
+  }
+}

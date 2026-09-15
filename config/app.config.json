@@ -1,0 +1,124 @@
+{
+  "niche": {
+    "id": "nutra",
+    "title": "Нутрициология, питание и спорт",
+    "language": "ru",
+    "keywords": [
+      "нутрициолог",
+      "витамин д дефицит",
+      "железо ферритин",
+      "магний дефицит",
+      "омега 3",
+      "бады какие пить",
+      "анализы что сдать",
+      "белок норма",
+      "усталость причины"
+    ],
+    "competitorChannels": [],
+    "bannedTopics": [
+      "лечение заболеваний",
+      "отмена назначений врача",
+      "гарантия результата"
+    ]
+  },
+  "intelligence": {
+    "searchProvider": "ytsearch",
+    "videosPerKeyword": 12,
+    "maxDurationSeconds": 180,
+    "minViews": 20000,
+    "downloadMedia": false,
+    "transcribeTopN": 8,
+    "whisperFallback": true,
+    "whisperModel": "medium",
+    "whisperDevice": "cpu",
+    "whisperComputeType": "int8",
+    "viralityWeights": {
+      "likes": 1.0,
+      "comments": 2.0,
+      "shares": 3.5,
+      "saves": 4.0
+    },
+    "fallbackFollowers": 100000,
+    "topicHistoryWindowDays": 90,
+    "duplicateSimilarityThreshold": 0.62
+  },
+  "script": {
+    "targetDurationSeconds": 38,
+    "minDurationSeconds": 30,
+    "maxDurationSeconds": 45,
+    "wordsPerSecond": 2.6,
+    "carouselSlides": {
+      "min": 5,
+      "max": 7
+    }
+  },
+  "voice": {
+    "presets": {
+      "male": {
+        "voice": "ru-RU-DmitryNeural",
+        "rate": "+6%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      },
+      "female": {
+        "voice": "ru-RU-SvetlanaNeural",
+        "rate": "+4%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "defaultPreset": "male",
+    "sampleRate": 16000,
+    "channels": 1
+  },
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "h264",
+    "concurrency": 2,
+    "glRenderer": "angle",
+    "musicVolume": 0.12,
+    "voiceVolume": 1.0,
+    "maxRenderSeconds": 900,
+    "defaultCharacterId": "default"
+  },
+  "carousel": {
+    "width": 1080,
+    "height": 1350,
+    "fonts": [
+      {
+        "name": "Unbounded",
+        "file": "Unbounded-Medium.ttf",
+        "weight": 600,
+        "style": "normal"
+      },
+      {
+        "name": "Inter",
+        "file": "Inter-Bold.ttf",
+        "weight": 700,
+        "style": "normal"
+      },
+      {
+        "name": "Inter",
+        "file": "Inter-Regular.ttf",
+        "weight": 400,
+        "style": "normal"
+      }
+    ],
+    "theme": {
+      "backgroundColor": "#0E1116",
+      "primaryTextColor": "#F5F7FA",
+      "accentColor": "#7CF29C",
+      "fontFamily": "Inter"
+    }
+  },
+  "retention": {
+    "keepRuns": 20,
+    "rawDays": 14
+  },
+  "paths": {
+    "storage": "storage",
+    "assets": "assets"
+  }
+}

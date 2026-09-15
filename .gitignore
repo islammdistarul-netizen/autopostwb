@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Runtime pipeline data — never commit media or state
+storage/raw/*
+storage/staged/*
+storage/artifacts/*
+storage/cache/*
+!storage/**/.gitkeep
+
+# Large media assets are provisioned on the server, not tracked.
+# Fonts (OFL, ~1 MB) and placeholder sprites ARE tracked so a fresh clone passes `npm run doctor`.
+assets/b-roll/*
+assets/music/*
+!assets/**/.gitkeep

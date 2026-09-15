@@ -1,0 +1,16 @@
+# /etc/systemd/system/autopostwb.timer
+# Two production cycles a day, ~1 h before the reel slots in config/postiz.config.json
+# (09:30 / 19:00 Europe/Moscow => 06:30 / 16:00 UTC). Each cycle publishes one reel
+# and one carousel; Postiz then posts them at the configured slots.
+[Unit]
+Description=Run the autopostwb factory cycle twice daily
+
+[Timer]
+OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 15:00:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=autopostwb.service
+
+[Install]
+WantedBy=timers.target

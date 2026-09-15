@@ -1,0 +1,58 @@
+{
+  "id": "default",
+  "name": "Expert Host",
+  "canvas": {
+    "width": 1080,
+    "height": 1920
+  },
+  "sprite": {
+    "anchor": {
+      "x": 540,
+      "y": 1400
+    },
+    "scale": 0.9,
+    "bounce": {
+      "amplitude": 14,
+      "stiffness": 140,
+      "damping": 14
+    }
+  },
+  "layers": {
+    "bodies": {
+      "dir": "bodies",
+      "idle": "body_idle.png",
+      "pointing": "body_pointing.png",
+      "thinking": "body_thinking.png",
+      "shocked": "body_shocked.png",
+      "hands_on_hips": "body_hands_on_hips.png"
+    },
+    "faces": {
+      "dir": "faces",
+      "offset": {
+        "x": 0,
+        "y": -180
+      },
+      "scale": 1.0,
+      "neutral": "face_neutral.png",
+      "happy": "face_happy.png",
+      "skeptical": "face_skeptical.png",
+      "surprised": "face_surprised.png"
+    },
+    "mouths": {
+      "dir": "mouths",
+      "offset": {
+        "x": 0,
+        "y": -70
+      },
+      "scale": 1.0,
+      "A": "mouth_A.png",
+      "B": "mouth_B.png",
+      "C": "mouth_C.png",
+      "D": "mouth_D.png",
+      "E": "mouth_E.png",
+      "F": "mouth_F.png",
+      "X": "mouth_X.png",
+      "closed": "mouth_closed.png"
+    }
+  }
+}

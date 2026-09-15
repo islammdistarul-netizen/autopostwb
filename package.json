@@ -1,0 +1,41 @@
+{
+  "name": "autopostwb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous content factory: competitor intelligence -> script -> voice -> reel + carousel -> Postiz distribution",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "intel": "tsx src/pipeline/cli.ts intel",
+    "produce": "tsx src/pipeline/cli.ts produce",
+    "publish": "tsx src/pipeline/cli.ts publish",
+    "run:full": "tsx src/pipeline/cli.ts full",
+    "doctor": "tsx src/pipeline/cli.ts doctor",
+    "carousel": "tsx src/pipeline/cli.ts carousel",
+    "studio": "remotion studio src/modules/video/Root.tsx",
+    "render": "remotion render src/modules/video/Root.tsx ReelComposition storage/artifacts/final_reel.mp4 --props=storage/staged/manifest.json --concurrency=2 --gl=angle",
+    "sprites:placeholder": "tsx scripts/make-placeholder-sprites.ts"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/fonts": "^4.0.0",
+    "@remotion/media-utils": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.0",
+    "satori": "^0.12.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.11",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

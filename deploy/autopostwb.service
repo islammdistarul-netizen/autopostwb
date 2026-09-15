@@ -1,0 +1,27 @@
+# /etc/systemd/system/autopostwb.service
+# One factory cycle per activation; the timer decides when. Run as the deploy
+# user that owns the checkout (never root — Remotion/Chromium refuse to run as root
+# without extra flags, and npm ownership gets messy).
+#
+#   sudo cp deploy/autopostwb.service deploy/autopostwb.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now autopostwb.timer
+#   journalctl -u autopostwb -f
+[Unit]
+Description=autopostwb content factory cycle (intel -> produce -> publish)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/autopostwb
+EnvironmentFile=-/opt/autopostwb/.env
+Environment=NODE_ENV=production
+Environment=CF_QUIET=0
+ExecStart=/usr/bin/bash /opt/autopostwb/deploy/run-cycle.sh
+# A cycle is ~5-15 min (scrape + TTS + render). Kill anything wedged well before the next slot.
+TimeoutStartSec=45min
+Nice=5
+# Remotion (2 workers) + whisper comfortably fit in 6 GB; cap so a leak can't take the box down.
+MemoryMax=6G
