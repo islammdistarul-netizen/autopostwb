@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import fs, { openAsBlob } from 'node:fs';
 import path from 'node:path';
 import { log } from '../../lib/log.ts';
 import { run, which } from '../../lib/shell.ts';
@@ -14,15 +14,16 @@ import {
 /**
  * Unified API client communicating with the self-hosted Postiz instance.
  *
- * Postiz Public API v1 (the only stable surface):
- *   GET  {host}{apiBasePath}/integrations   -> connected channels
- *   POST {host}{apiBasePath}/upload         -> multipart file upload, returns {id, path}
- *   POST {host}{apiBasePath}/posts          -> create/schedule posts
- * Auth: `Authorization: <POSTIZ_API_KEY>` (raw key, no Bearer prefix).
- *
- * The spec's `http://localhost:5000/api/posts` is the *internal* backend route;
- * on a docker-compose install the public API sits under /api/public/v1, which
- * is what config/postiz.config.json points at.
+ * Postiz Public API v1 (https://docs.postiz.com/public-api), cross-checked
+ * against a client exercised on a live instance in 08.2026 (ossclip):
+ *   GET  {host}{apiBasePath}/integrations   -> connected channels {id, name, identifier, disabled}
+ *   POST {host}{apiBasePath}/upload         -> multipart "file" -> {id, path}
+ *   POST {host}{apiBasePath}/posts          -> {type, date, shortLink, tags: [], posts: [...]}
+ * Auth: `Authorization: <POSTIZ_API_KEY>` verbatim (no Bearer).
+ * Every post needs `settings.__type = <integration.identifier>`; YouTube also
+ * requires `settings.type` (privacy) and Instagram `settings.post_type` — a
+ * missing one rejects the WHOLE /posts call at validation, after the upload.
+ * Self-hosted rate limit: 90 posts/hour.
  *
  * Nothing here talks to Instagram/TikTok/etc. directly — Postiz owns OAuth,
  * rate limits and scheduling.
@@ -37,9 +38,28 @@ const MIME: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
+/** Post ids out of whatever envelope /posts answers with — lenient by design: 2xx is the success signal. */
+export function extractPostIds(json: unknown): string[] {
+  const items = Array.isArray(json)
+    ? json
+    : json && typeof json === 'object' && Array.isArray((json as { posts?: unknown }).posts)
+      ? (json as { posts: unknown[] }).posts
+      : [json];
+  const ids: string[] = [];
+  for (const item of items) {
+    if (item && typeof item === 'object') {
+      const o = item as { id?: unknown; postId?: unknown };
+      const id = o.postId ?? o.id;
+      if (typeof id === 'string') ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export class PostizClient {
   private readonly base: string;
   private readonly apiKey: string;
+  private integrationsCache: PostizIntegration[] | null = null;
 
   constructor(private readonly config: PostizConfig) {
     this.base = config.host.replace(/\/+$/, '') + config.apiBasePath.replace(/\/+$/, '');
@@ -52,11 +72,6 @@ export class PostizClient {
     this.apiKey = key;
   }
 
-  /**
-   * The public API is rate-limited (30 requests/hour on a default install), and
-   * one full run spends ~10 (uploads + posts). 429s are retried with backoff
-   * honouring Retry-After; anything else fails fast so the run log shows it.
-   */
   private async request<T>(method: 'GET' | 'POST', route: string, body?: BodyInit, timeoutMs?: number): Promise<T> {
     const url = `${this.base}${route}`;
     const maxAttempts = 4;
@@ -70,13 +85,19 @@ export class PostizClient {
         const text = await res.text();
         if (res.status === 429 && attempt < maxAttempts) {
           const retryAfter = Number.parseInt(res.headers.get('retry-after') ?? '', 10);
-          const waitMs = (Number.isFinite(retryAfter) ? retryAfter : 30 * attempt) * 1000;
-          log.warn('Postiz rate limit hit, backing off', { route, attempt, waitSeconds: waitMs / 1000 });
+          const waitMs = (Number.isFinite(retryAfter) ? retryAfter : 60 * attempt) * 1000;
+          log.warn('Postiz rate limit (90 posts/hour), backing off', { route, attempt, waitSeconds: waitMs / 1000 });
           await new Promise((r) => setTimeout(r, waitMs));
           continue;
         }
         if (!res.ok) {
-          throw new Error(`Postiz ${method} ${route} -> ${res.status}: ${text.slice(0, 600)}`);
+          const hint =
+            res.status === 401 || res.status === 403
+              ? ' (API key rejected: Postiz -> Settings -> Public API)'
+              : res.status === 413
+                ? ' (upload refused as too large — usually a reverse proxy in front of Postiz, e.g. Cloudflare free caps at 100MB; call the instance directly)'
+                : '';
+          throw new Error(`Postiz ${method} ${route} -> ${res.status}${hint}: ${text.slice(0, 600)}`);
         }
         return (text ? JSON.parse(text) : {}) as T;
       } catch (err) {
@@ -90,10 +111,21 @@ export class PostizClient {
     }
   }
 
-  async listIntegrations(): Promise<PostizIntegration[]> {
+  async listIntegrations(force = false): Promise<PostizIntegration[]> {
+    if (this.integrationsCache && !force) return this.integrationsCache;
     const data = await this.request<unknown>('GET', '/integrations');
     const list = Array.isArray(data) ? data : [];
-    return list.map((item) => PostizIntegrationSchema.parse(item));
+    this.integrationsCache = list.map((item) => PostizIntegrationSchema.parse(item));
+    return this.integrationsCache;
+  }
+
+  /** channel id -> platform identifier ("youtube", "instagram", "telegram", ...). */
+  async integrationTypes(): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    for (const i of await this.listIntegrations()) {
+      if (i.identifier) map.set(i.id, i.identifier);
+    }
+    return map;
   }
 
   async uploadFile(filePath: string): Promise<PostizUploadedMedia> {
@@ -101,7 +133,8 @@ export class PostizClient {
     const name = path.basename(filePath);
     const mime = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
     const form = new FormData();
-    form.append('file', new Blob([fs.readFileSync(filePath)], { type: mime }), name);
+    // openAsBlob streams the file into multipart without holding it in memory.
+    form.append('file', await openAsBlob(filePath, { type: mime }), name);
 
     log.info('uploading to Postiz', { file: name, mb: Number((fs.statSync(filePath).size / 1024 / 1024).toFixed(1)) });
     const data = await this.request<unknown>('POST', '/upload', form, this.config.uploadTimeoutMs);
@@ -110,25 +143,23 @@ export class PostizClient {
   }
 
   async createPost(request: PostizPostRequest): Promise<string[]> {
+    for (const p of request.posts) {
+      if (!p.settings || typeof p.settings.__type !== 'string') {
+        throw new Error(`post for integration ${p.integration.id} lacks settings.__type (platform identifier) — Postiz rejects the whole request without it`);
+      }
+    }
     const data = await this.request<unknown>('POST', '/posts', JSON.stringify(request));
-    // Postiz returns an array of {postId, integration} (one per channel) or a single object.
-    const items = Array.isArray(data) ? data : [data];
-    return items
-      .map((item) => {
-        const o = item as { postId?: string; id?: string };
-        return o.postId ?? o.id ?? '';
-      })
-      .filter(Boolean);
+    return extractPostIds(data);
   }
 
   /**
-   * Optional CLI dispatch (`postiz posts:create ...`). Kept as an adapter for
-   * environments where the agent package is preferred; REST is the default
-   * because its request shape is documented and validated above.
+   * Optional CLI dispatch. No official `postiz` CLI package exists on npm as of
+   * 09.2026 (checked @gitroomhq/postiz-agent, postiz-agent, @postiz/cli);
+   * kept as an adapter for a locally installed tool with that interface.
    */
   async createPostViaCli(caption: string, mediaPaths: string[], channelIds: string[], date: string): Promise<string[]> {
     if (!(await which(this.config.cliCommand))) {
-      throw new Error(`${this.config.cliCommand} CLI not found; set dispatchMode to "rest" or install @gitroomhq/postiz-agent.`);
+      throw new Error(`${this.config.cliCommand} CLI not found; set dispatchMode to "rest".`);
     }
     const result = await run(
       this.config.cliCommand,

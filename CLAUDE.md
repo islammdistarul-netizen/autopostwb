@@ -108,10 +108,10 @@ Writes outside `storage/` are refused at runtime by `assertWritable()` in `src/l
 * Postiz handles OAuth token refreshes, rate limits, and scheduling for Instagram, TikTok, YouTube Shorts, Telegram and VK.
 * Dispatch methods:
   * REST (default): the Postiz **public API v1** at `{host}/api/public/v1` — `POST /upload` (multipart) then `POST /posts`, header `Authorization: <POSTIZ_API_KEY>` (raw key, no Bearer). `/api/posts` is the internal backend route and is not used.
-  * CLI (optional): `postiz posts:create` via the `@gitroomhq/postiz-agent` package (`dispatchMode: "cli"`).
-* The public API is rate-limited (~30 requests/hour). One cycle spends ~10; never schedule more than 2 cycles per hour.
+  * CLI (optional, `dispatchMode: "cli"`): no official `postiz` CLI package exists on npm (checked 09.2026); the adapter only wraps a locally installed tool with a `posts:create` interface.
+* Every post carries `settings.__type = <integration.identifier>` (from `GET /integrations`); YouTube also needs `settings.type` (privacy) and Instagram `settings.post_type` — Postiz validates the whole `/posts` body and rejects it after the upload when one is missing. `buildPostSettings()` fills these; `config/postiz.config.json` → `channelSettings[id]` overrides.
+* Self-hosted rate limit: 90 posts/hour. Platform caps enforced before upload: Instagram ≈95 MB, durations Threads 300 s / TikTok 600 s / Instagram 900 s (over-cap channels are skipped, the rest publish).
 * Multi-slide carousels must be bundled as an ordered list of uploaded media in a single Postiz post request.
-* Provider-specific requirements (YouTube title/type, TikTok privacy level, Instagram post_type) live in `config/postiz.config.json` → `channelSettings`.
 
 ## 4. Core TypeScript Contracts
 

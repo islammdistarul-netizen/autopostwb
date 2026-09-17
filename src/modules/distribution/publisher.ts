@@ -34,6 +34,14 @@ interface PublishLogEntry {
 
 const LEGAL_FOOTER = 'БАД. Не является лекарственным средством.';
 
+/**
+ * Platform caps observed on live publishes (ossclip, 08.2026): Instagram's
+ * URL-fetch ingest rejects files around 100MB; duration caps are the
+ * platforms' own. Over-cap channels are skipped, the rest still publish.
+ */
+export const PLATFORM_SIZE_CAP_BYTES: Record<string, number> = { instagram: 95_000_000 };
+export const PLATFORM_DURATION_CAP_SEC: Record<string, number> = { threads: 300, tiktok: 600, instagram: 900 };
+
 function withLegalFooter(caption: string, category: string): string {
   // ст. 25 ФЗ «О рекламе»: any post that can be read as promoting a dietary
   // supplement carries the disclaimer. Cheap to always include in this niche.
@@ -93,15 +101,63 @@ function resolveChannels(manifest: ProductionPayload, config: PostizConfig, kind
 }
 
 /**
- * Provider settings for one channel. `title` (YouTube) defaults to the hook so
- * a config entry of just `{ "type": "public" }` is enough.
+ * Per-post `settings` for Postiz. `__type` (platform identifier) is mandatory
+ * on every post; YouTube additionally needs `type` (privacy) and Instagram
+ * `post_type` — Postiz validates the whole request and rejects it after the
+ * upload when one is missing. Config `channelSettings[id]` overrides defaults.
  */
-function channelSettings(config: PostizConfig, channelId: string, manifest: ProductionPayload): Record<string, unknown> {
-  const base = config.channelSettings[channelId] ?? {};
-  if ('type' in base && !('title' in base)) {
-    return { ...base, title: manifest.topic.hook.slice(0, 100) };
+export function buildPostSettings(
+  config: PostizConfig,
+  channelId: string,
+  platform: string | undefined,
+  manifest: ProductionPayload,
+  kind: PublishResult['kind'],
+): Record<string, unknown> {
+  const override = config.channelSettings[channelId] ?? {};
+  const type = typeof override.__type === 'string' ? override.__type : platform;
+  if (!type) {
+    throw new Error(
+      `Cannot determine the platform of channel ${channelId}: not in GET /integrations and no channelSettings.${channelId}.__type in postiz.config.json`,
+    );
   }
-  return base;
+  const defaults: Record<string, unknown> = { __type: type };
+  if (type === 'youtube') {
+    defaults.title = manifest.topic.hook.slice(0, 100);
+    // "public" because this is an autoposting factory; use --mode draft (or channelSettings.type = "private") while reviewing.
+    defaults.type = 'public';
+  }
+  if (type === 'instagram') defaults.post_type = kind === 'carousel' ? 'post' : 'post';
+  if (type === 'tiktok') {
+    defaults.privacy_level = 'PUBLIC_TO_EVERYONE';
+    defaults.duet = false;
+    defaults.stitch = false;
+    defaults.comment = true;
+  }
+  return { ...defaults, ...override };
+}
+
+/** Channels whose platform caps the artifact violates, with the reason. */
+export function checkPlatformCaps(
+  channelIds: string[],
+  platforms: Map<string, string>,
+  sizeBytes: number,
+  durationSec: number | null,
+): Array<{ channelId: string; reason: string }> {
+  const skipped: Array<{ channelId: string; reason: string }> = [];
+  for (const id of channelIds) {
+    const platform = platforms.get(id);
+    if (!platform) continue;
+    const sizeCap = PLATFORM_SIZE_CAP_BYTES[platform];
+    if (sizeCap !== undefined && sizeBytes > sizeCap) {
+      skipped.push({ channelId: id, reason: `${platform}: ${Math.round(sizeBytes / 1e6)}MB exceeds ${Math.round(sizeCap / 1e6)}MB cap` });
+      continue;
+    }
+    const durCap = PLATFORM_DURATION_CAP_SEC[platform];
+    if (durCap !== undefined && durationSec !== null && durationSec > durCap) {
+      skipped.push({ channelId: id, reason: `${platform}: ${Math.round(durationSec)}s exceeds ${durCap}s cap` });
+    }
+  }
+  return skipped;
 }
 
 function recordPublish(entry: PublishLogEntry): void {
@@ -110,85 +166,50 @@ function recordPublish(entry: PublishLogEntry): void {
   writeJson(files.publishLog, logEntries);
 }
 
-export async function publishReel(
+async function dispatch(
   manifest: ProductionPayload,
   config: PostizConfig,
-  options: PublishOptions = {},
+  options: PublishOptions,
+  kind: PublishResult['kind'],
+  mediaPaths: string[],
 ): Promise<PublishResult | null> {
-  const channelIds = resolveChannels(manifest, config, 'reel');
+  let channelIds = resolveChannels(manifest, config, kind);
   if (channelIds.length === 0) {
-    log.warn('no reel channels configured; skipping reel publish');
+    log.warn(`no ${kind} channels configured; skipping ${kind} publish`);
     return null;
   }
-  if (!fs.existsSync(files.finalReel)) throw new Error(`Reel not found: ${files.finalReel}`);
+  const missing = mediaPaths.filter((p) => !fs.existsSync(p));
+  if (missing.length) throw new Error(`${kind} media missing: ${missing.join(', ')}`);
 
-  const scheduledFor = options.scheduledAt ?? manifest.distribution.scheduledTimestamp ?? nextSlot(config, 'reel');
+  const scheduledFor = options.scheduledAt ?? manifest.distribution.scheduledTimestamp ?? nextSlot(config, kind);
   const caption = buildCaption(manifest);
-  log.step(`Publish reel -> ${channelIds.length} channel(s) @ ${scheduledFor}`);
+  log.step(`Publish ${kind} (${mediaPaths.length} file(s)) -> ${channelIds.length} channel(s) @ ${scheduledFor}`);
 
   if (options.dryRun) {
-    log.info('dry-run: reel payload', { channelIds, scheduledFor, media: files.finalReel, captionChars: caption.length });
-    return { kind: 'reel', channelIds, scheduledFor, postIds: [], dispatchedVia: 'rest' };
+    const settingsPreview = Object.fromEntries(
+      channelIds.map((id) => [id, buildPostSettings(config, id, config.channelSettings[id]?.__type as string | undefined ?? 'unknown', manifest, kind)]),
+    );
+    log.info(`dry-run: ${kind} payload`, { channelIds, scheduledFor, media: mediaPaths.length, captionChars: caption.length, settings: settingsPreview });
+    return { kind, channelIds, scheduledFor, postIds: [], dispatchedVia: 'rest' };
   }
 
   const client = new PostizClient(config);
   let postIds: string[];
   if (config.dispatchMode === 'cli') {
-    postIds = await client.createPostViaCli(caption, [files.finalReel], channelIds, scheduledFor);
+    postIds = await client.createPostViaCli(caption, mediaPaths, channelIds, scheduledFor);
   } else {
-    const media = await client.uploadFile(files.finalReel);
-    postIds = await client.createPost({
-      type: options.mode ?? 'schedule',
-      date: scheduledFor,
-      shortLink: false,
-      tags: [],
-      posts: channelIds.map((id) => ({
-        integration: { id },
-        value: [{ content: caption, image: [media] }],
-        settings: channelSettings(config, id, manifest),
-      })),
-    });
-  }
+    const platforms = await client.integrationTypes();
+    const totalBytes = mediaPaths.reduce((sum, p) => sum + fs.statSync(p).size, 0);
+    const duration = kind === 'reel' ? manifest.script.estimatedDuration : null;
+    const skipped = checkPlatformCaps(channelIds, platforms, totalBytes, duration);
+    for (const s of skipped) log.warn('channel skipped by platform cap', s);
+    channelIds = channelIds.filter((id) => !skipped.some((s) => s.channelId === id));
+    if (channelIds.length === 0) throw new Error(`every ${kind} channel was skipped by platform caps`);
 
-  const result: PublishResult = { kind: 'reel', channelIds, scheduledFor, postIds, dispatchedVia: config.dispatchMode };
-  recordPublish({ runId: manifest.runId, ...result, at: new Date().toISOString() });
-  return result;
-}
-
-export async function publishCarousel(
-  manifest: ProductionPayload,
-  config: PostizConfig,
-  options: PublishOptions = {},
-): Promise<PublishResult | null> {
-  const channelIds = resolveChannels(manifest, config, 'carousel');
-  if (channelIds.length === 0) {
-    log.warn('no carousel channels configured; skipping carousel publish');
-    return null;
-  }
-
-  const slidePaths = [...manifest.carouselConfig.slides]
-    .sort((a, b) => a.index - b.index)
-    .map((s) => path.join(paths.carouselOut, `slide_${s.index}.png`));
-  const missing = slidePaths.filter((p) => !fs.existsSync(p));
-  if (missing.length) throw new Error(`Carousel slides missing: ${missing.join(', ')}`);
-
-  const scheduledFor = options.scheduledAt ?? manifest.distribution.scheduledTimestamp ?? nextSlot(config, 'carousel');
-  const caption = buildCaption(manifest);
-  log.step(`Publish carousel (${slidePaths.length} slides) -> ${channelIds.length} channel(s) @ ${scheduledFor}`);
-
-  if (options.dryRun) {
-    log.info('dry-run: carousel payload', { channelIds, scheduledFor, slides: slidePaths.length, captionChars: caption.length });
-    return { kind: 'carousel', channelIds, scheduledFor, postIds: [], dispatchedVia: 'rest' };
-  }
-
-  const client = new PostizClient(config);
-  let postIds: string[];
-  if (config.dispatchMode === 'cli') {
-    postIds = await client.createPostViaCli(caption, slidePaths, channelIds, scheduledFor);
-  } else {
     // Upload in order; the array order is the carousel order Postiz sends downstream.
     const media: PostizUploadedMedia[] = [];
-    for (const p of slidePaths) media.push(await client.uploadFile(p));
+    for (const p of mediaPaths) media.push(await client.uploadFile(p));
+
     postIds = await client.createPost({
       type: options.mode ?? 'schedule',
       date: scheduledFor,
@@ -197,12 +218,23 @@ export async function publishCarousel(
       posts: channelIds.map((id) => ({
         integration: { id },
         value: [{ content: caption, image: media }],
-        settings: channelSettings(config, id, manifest),
+        settings: buildPostSettings(config, id, platforms.get(id), manifest, kind),
       })),
     });
   }
 
-  const result: PublishResult = { kind: 'carousel', channelIds, scheduledFor, postIds, dispatchedVia: config.dispatchMode };
+  const result: PublishResult = { kind, channelIds, scheduledFor, postIds, dispatchedVia: config.dispatchMode };
   recordPublish({ runId: manifest.runId, ...result, at: new Date().toISOString() });
   return result;
+}
+
+export async function publishReel(manifest: ProductionPayload, config: PostizConfig, options: PublishOptions = {}): Promise<PublishResult | null> {
+  return dispatch(manifest, config, options, 'reel', [files.finalReel]);
+}
+
+export async function publishCarousel(manifest: ProductionPayload, config: PostizConfig, options: PublishOptions = {}): Promise<PublishResult | null> {
+  const slidePaths = [...manifest.carouselConfig.slides]
+    .sort((a, b) => a.index - b.index)
+    .map((s) => path.join(paths.carouselOut, `slide_${s.index}.png`));
+  return dispatch(manifest, config, options, 'carousel', slidePaths);
 }
