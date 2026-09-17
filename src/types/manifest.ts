@@ -8,16 +8,26 @@ import { z } from 'zod';
  * what keeps a headless `claude -p` generation step from silently drifting.
  */
 
+/**
+ * Base vocabulary every character ships with and the scriptwriter is prompted
+ * with. A character may register more poses/moods in its character.json (via
+ * scripts/generate-sprite.ts + approval); the orchestrator validates a manifest's
+ * timeline against the *registered* set before rendering.
+ */
 export const BODY_POSES = ['idle', 'pointing', 'thinking', 'shocked', 'hands_on_hips'] as const;
 export const FACE_MOODS = ['neutral', 'happy', 'skeptical', 'surprised'] as const;
 export const VISEME_CODES = ['A', 'B', 'C', 'D', 'E', 'F', 'X'] as const;
 
-export type BodyPose = (typeof BODY_POSES)[number];
-export type FaceMood = (typeof FACE_MOODS)[number];
+export type BasePose = (typeof BODY_POSES)[number];
+export type BaseMood = (typeof FACE_MOODS)[number];
+/** snake_case identifier registered in a character.json (base set or generated). */
+export type BodyPose = string;
+export type FaceMood = string;
 export type VisemeCode = (typeof VISEME_CODES)[number];
 
-export const BodyPoseSchema = z.enum(BODY_POSES);
-export const FaceMoodSchema = z.enum(FACE_MOODS);
+const IDENT = /^[a-z][a-z0-9_]{1,40}$/;
+export const BodyPoseSchema = z.string().regex(IDENT, 'pose must be a snake_case identifier');
+export const FaceMoodSchema = z.string().regex(IDENT, 'mood must be a snake_case identifier');
 export const VisemeCodeSchema = z.enum(VISEME_CODES);
 
 export interface TimedCaptionWord {

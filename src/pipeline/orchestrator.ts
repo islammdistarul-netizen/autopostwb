@@ -16,7 +16,9 @@ import {
 import { run } from '../lib/shell.ts';
 import { assertManifest, type ProductionPayload } from '../types/manifest.ts';
 import { loadTopicHistory, recordTopicUsage, runIntelligence, type TopicCandidate, type TopicsFile } from '../modules/intelligence/analyzer.ts';
-import { buildTimeline, compileManifest, writeScript } from '../modules/scripting/scriptwriter.ts';
+import { buildTimeline, compileManifest, setPoseContext, writeScript } from '../modules/scripting/scriptwriter.ts';
+import { loadCharacter } from '../modules/avatar/sprites.ts';
+import { registeredMoods, registeredPoses, type CharacterDefinition } from '../types/avatar.ts';
 import { synthesizeVoice } from '../modules/synthesis/voice.ts';
 import { generateMouthCues } from '../modules/synthesis/lipsync.ts';
 import { compileCarousel } from '../modules/carousel/compiler.ts';
@@ -107,6 +109,20 @@ export function pickTopic(topicId?: string): TopicCandidate {
   return fresh;
 }
 
+/** Zero Character Drift: every pose/mood in the timeline must be registered in character.json. */
+export function assertTimelineMatchesCharacter(manifest: ProductionPayload, character: CharacterDefinition): void {
+  const poses = new Set(registeredPoses(character));
+  const moods = new Set(registeredMoods(character));
+  const bad = manifest.videoConfig.timeline.filter((s) => !poses.has(s.body) || !moods.has(s.face));
+  if (bad.length) {
+    throw new Error(
+      `Timeline references unregistered sprites for character "${character.id}": ` +
+        bad.map((s) => `${s.body}/${s.face}`).join(', ') +
+        `. Registered poses: ${[...poses].join(', ')}; moods: ${[...moods].join(', ')}.`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Steps 2-5
 // ---------------------------------------------------------------------------
@@ -170,10 +186,16 @@ export async function stepProduce(options: ProduceOptions = {}): Promise<RunSumm
   const targetDate = new Date().toISOString().slice(0, 10);
   log.step(`Produce ${runId} <- topic ${topic.id} (${topic.hookType})`);
 
+  // The character decides which poses/moods a script may use; drafts are normalized against it.
+  const characterId = options.characterId ?? config.video.defaultCharacterId;
+  const character = loadCharacter(characterId);
+  setPoseContext({ characterId, poses: registeredPoses(character), moods: registeredMoods(character) });
+
   // Step 2: script -> manifest (captions are estimates until TTS reports real timings)
   const draft = await writeScript(topic, config);
-  let { manifest } = compileManifest(draft, topic, config, { runId, targetDate, characterId: options.characterId });
+  let { manifest } = compileManifest(draft, topic, config, { runId, targetDate, characterId });
   manifest = assertManifest(manifest);
+  assertTimelineMatchesCharacter(manifest, character);
   writeJson(files.manifest, manifest);
 
   // Step 3: voice + acoustic lipsync

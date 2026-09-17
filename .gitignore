@@ -15,3 +15,7 @@ storage/cache/*
 assets/b-roll/*
 assets/music/*
 !assets/**/.gitkeep
+
+# Piper voice models (downloaded by setup-server.sh)
+assets/voices/*
+!assets/voices/.gitkeep

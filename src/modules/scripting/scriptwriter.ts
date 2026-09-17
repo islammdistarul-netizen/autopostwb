@@ -16,6 +16,7 @@ import {
   type TimedCaptionWord,
 } from '../../types/manifest.ts';
 import type { TopicCandidate } from '../intelligence/analyzer.ts';
+import { recordSpriteRequest } from '../avatar/sprites.ts';
 
 /**
  * Scripting & manifest compilation (pipeline Step 2).
@@ -29,14 +30,67 @@ import type { TopicCandidate } from '../intelligence/analyzer.ts';
  * to use the deterministic fallback for smoke tests without an LLM.
  */
 
+/**
+ * Pose/mood vocabulary the model tends to produce -> registered identifiers.
+ * Anything unknown is mapped to the closest base pose AND logged as a sprite
+ * request, so the run never fails and the missing art can be generated and
+ * approved later (scripts/generate-sprite.ts).
+ */
+const POSE_SYNONYMS: Record<string, string> = {
+  explaining: 'pointing', point: 'pointing', pointing_up: 'pointing', gesture: 'pointing',
+  hands_up: 'shocked', surprised: 'shocked', amazed: 'shocked',
+  confident: 'hands_on_hips', proud: 'hands_on_hips', waving: 'hands_on_hips', wave: 'hands_on_hips',
+  think: 'thinking', curious: 'thinking', doubt: 'thinking',
+  talking: 'idle', neutral: 'idle', rest: 'idle', default: 'idle', calm: 'idle',
+};
+const MOOD_SYNONYMS: Record<string, string> = {
+  smile: 'happy', joy: 'happy', friendly: 'happy', excited: 'happy',
+  suspicious: 'skeptical', doubtful: 'skeptical', unsure: 'skeptical', serious: 'skeptical',
+  shock: 'surprised', wow: 'surprised', amazed: 'surprised', shocked: 'surprised',
+  calm: 'neutral', default: 'neutral', focused: 'neutral',
+};
+
+const toIdent = (raw: string) => raw.trim().toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
+export interface PoseContext {
+  characterId: string;
+  poses: string[];
+  moods: string[];
+}
+
+let poseContext: PoseContext = { characterId: 'default', poses: [...BODY_POSES], moods: [...FACE_MOODS] };
+
+/** Called by the orchestrator so drafts are normalized against the character actually rendering. */
+export function setPoseContext(ctx: PoseContext): void {
+  poseContext = ctx;
+}
+
+export function normalizePose(raw: string, topicId?: string): string {
+  const ident = toIdent(raw);
+  if (poseContext.poses.includes(ident)) return ident;
+  const mapped = POSE_SYNONYMS[ident];
+  if (mapped && poseContext.poses.includes(mapped)) return mapped;
+  recordSpriteRequest({ characterId: poseContext.characterId, pose: ident || 'unknown', reason: `script for ${topicId ?? 'unknown topic'}` });
+  log.warn('unknown pose mapped to idle; sprite request recorded', { pose: ident });
+  return poseContext.poses.includes('idle') ? 'idle' : poseContext.poses[0]!;
+}
+
+export function normalizeMood(raw: string): string {
+  const ident = toIdent(raw);
+  if (poseContext.moods.includes(ident)) return ident;
+  const mapped = MOOD_SYNONYMS[ident];
+  if (mapped && poseContext.moods.includes(mapped)) return mapped;
+  return poseContext.moods.includes('neutral') ? 'neutral' : poseContext.moods[0]!;
+}
+
 export const ScriptDraftSchema = z.object({
   hook: z.string().min(8).max(140),
   segments: z
     .array(
       z.object({
         text: z.string().min(3),
-        body: BodyPoseSchema,
-        face: FaceMoodSchema,
+        body: z.string().min(1).transform((v) => normalizePose(v)).pipe(BodyPoseSchema),
+        face: z.string().min(1).transform((v) => normalizeMood(v)).pipe(FaceMoodSchema),
       }),
     )
     .min(3)
@@ -80,7 +134,8 @@ export function buildPrompt(topic: TopicCandidate, config: AppConfig): string {
     `- Никаких обещаний вылечить, никаких «отмени назначения врача». Запрещённые темы: ${niche.bannedTopics.join('; ') || 'нет'}.`,
     `- Если упоминаются БАДы — без обещаний результата (ст. 25 ФЗ «О рекламе»).`,
     `- Разбей озвучку на 4–9 сегментов; для каждого укажи позу и эмоцию аватара.`,
-    `  Допустимые позы: ${BODY_POSES.join(', ')}. Допустимые эмоции: ${FACE_MOODS.join(', ')}. Ничего другого.`,
+    `  Доступные позы: ${poseContext.poses.join(', ')}. Доступные эмоции: ${poseContext.moods.join(', ')}.`,
+    `  Используй только их. Если сцене очень нужна другая поза, всё равно выбери ближайшую из списка.`,
     `- Слайд 1 карусели — хук, последний — итог с призывом сохранить. Заголовок ≤ 90 символов, текст ≤ 420 символов.`,
     `- Подпись к посту 300–900 символов, живой человеческий тон, без воды. 8–15 хэштегов без решётки.`,
     `- Без эмодзи и markdown нигде: ни в озвучке, ни на слайдах, ни в подписи (шрифты слайдов их не рисуют, а озвучка читает вслух).`,
@@ -110,6 +165,9 @@ async function draftViaClaude(prompt: string): Promise<ScriptDraft> {
   const args = ['-p', prompt, '--output-format', 'text'];
   const model = process.env.CF_CLAUDE_MODEL;
   if (model) args.push('--model', model);
+  // Hard spend cap per scripting call so a retry loop can never run up a bill.
+  const budget = process.env.CF_CLAUDE_MAX_BUDGET_USD;
+  if (budget && Number(budget) > 0) args.push('--max-budget-usd', budget);
 
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {

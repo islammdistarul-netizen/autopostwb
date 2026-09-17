@@ -34,6 +34,14 @@ apt-get install -y -qq \
   fonts-liberation xdg-utils
 
 # ---------------------------------------------------------------------------
+log "Swap 4G (Remotion + whisper peaks on an 8 GB box)"
+if ! swapon --show | grep -q '/swapfile' && [[ ! -f /swapfile ]]; then
+  fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+free -h | sed -n '1,3p'
+
+# ---------------------------------------------------------------------------
 log "Node.js 22 (NodeSource) if missing"
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | cut -c2-3)" -lt 20 ]]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
@@ -42,10 +50,17 @@ fi
 node -v
 
 # ---------------------------------------------------------------------------
-log "Python packages: edge-tts, faster-whisper, yt-dlp, fonttools"
+log "Python packages: edge-tts, faster-whisper, yt-dlp, fonttools, piper-tts (offline TTS), rembg (sprite intake)"
 PIP_FLAGS="--break-system-packages"
-python3 -m pip install -q --upgrade $PIP_FLAGS edge-tts faster-whisper fonttools 2>/dev/null || \
-python3 -m pip install -q --upgrade edge-tts faster-whisper fonttools
+PY_PKGS="edge-tts faster-whisper fonttools piper-tts rembg[cpu]"
+python3 -m pip install -q --upgrade $PIP_FLAGS $PY_PKGS 2>/dev/null || \
+python3 -m pip install -q --upgrade $PY_PKGS
+# Piper Russian voice (MIT). More voices: https://huggingface.co/rhasspy/piper-voices/tree/main/ru/ru_RU
+mkdir -p "$ROOT/assets/voices"
+for f in ru_RU-irina-medium.onnx ru_RU-irina-medium.onnx.json; do
+  [[ -f "$ROOT/assets/voices/$f" ]] || curl -fsSL -o "$ROOT/assets/voices/$f" \
+    "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/$f" || echo "  (piper voice download skipped: $f)"
+done
 if ! command -v yt-dlp >/dev/null 2>&1; then
   pipx install yt-dlp >/dev/null || python3 -m pip install -q $PIP_FLAGS yt-dlp
   pipx ensurepath >/dev/null 2>&1 || true

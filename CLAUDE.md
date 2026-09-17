@@ -36,14 +36,17 @@ src/
   lib/                     paths.ts (storage/ write boundary), config.ts, shell.ts (argv-only spawn), log.ts
   modules/
     intelligence/          scraper.ts, transcriber.ts, analyzer.ts
-    scripting/             scriptwriter.ts (claude -p draft -> ProductionPayload)
-    synthesis/             voice.ts, lipsync.ts
+    scripting/             scriptwriter.ts (claude -p draft -> ProductionPayload, pose/mood normalization)
+    synthesis/             voice.ts, align.ts, lipsync.ts, providers/{edge,yandex,piper,elevenlabs}.ts
+    avatar/                sprites.ts (intake: prepare / register / requests)
     video/                 Root.tsx, ReelComposition.tsx, props.ts, components/
     carousel/              compiler.ts, styles.ts, templates/
     distribution/          postiz.client.ts, publisher.ts
   pipeline/                orchestrator.ts, cli.ts, doctor.ts
-scripts/                   setup-server.sh, tts.py, transcribe.py, make-placeholder-sprites.ts, fetch-broll.sh, normalize-music.sh
+scripts/                   setup-server.sh, tts.py, transcribe.py, make-placeholder-sprites.ts,
+                           prepare-sprites.ts, generate-sprite.ts, fetch-broll.sh, normalize-music.sh
 deploy/                    run-cycle.sh, autopostwb.service, autopostwb.timer, postiz/docker-compose.yml
+assets/voices/             Piper .onnx voices (provisioned, untracked)
 ```
 
 Additional runtime locations inside `storage/`:
@@ -65,18 +68,26 @@ Writes outside `storage/` are refused at runtime by `assertWritable()` in `src/l
 
 ### Avatar & Sprite Consistency (Zero Character Drift)
 
-* Use only the sprite filenames physically registered in `assets/characters/{characterId}/character.json`.
-* Never invent sprite names during script writing. Allowed poses: `idle`, `pointing`, `thinking`, `shocked`, `hands_on_hips`. Allowed moods: `neutral`, `happy`, `skeptical`, `surprised`.
-* Do not call AI image generation models (diffusion/Midjourney/FLUX) inside the video compilation loop.
-* Dynamic mouth movement is driven strictly by Rhubarb visemes from `mouth-cues.json`. Never animate mouth shapes through manual coding.
+* The avatar is static art switched per frame — never video, never diffusion at render time. Two assembly modes in `character.json` (`mode`):
+  * `layered`: body (no face) + face overlay + mouth overlay; the head must sit at identical coordinates in every body sprite.
+  * `composite`: one full frame per pose×mood (`layers.frames.byPose`), mouth overlay on top; a missing mood falls back to `layers.bodies[pose]`. Preferred for generated art.
+* Use only the sprite filenames physically registered in `assets/characters/{characterId}/character.json`. The orchestrator rejects a manifest whose timeline references an unregistered pose or mood (`assertTimelineMatchesCharacter`).
+* Base vocabulary every character ships with — poses: `idle`, `pointing`, `thinking`, `shocked`, `hands_on_hips`; moods: `neutral`, `happy`, `skeptical`, `surprised`. A character may register more. The scriptwriter normalizes synonyms (`explaining`→`pointing`) and maps anything unknown to `idle` while logging it to `storage/cache/sprite-requests.json`.
+* New sprites enter only through the human-gated intake: `scripts/generate-sprite.ts` (on-model generation from `generation.reference`) or hand-made art → `scripts/prepare-sprites.ts` (rembg → trim → fit → preview with mouth/face guides) → `--approve`. Never inside the render loop, never without a preview.
+* Dynamic mouth movement is driven strictly by Rhubarb visemes from `mouth-cues.json`. Blinking comes from the deterministic `isBlinking()` schedule with the registered `layers.blink` overlay. Never animate mouth or eyes through manual per-frame coding.
 
 ### Audio & Lip-Sync Rules
 
 * When generating visemes with Rhubarb on Russian speech, always execute with the language-independent recognizer:
   `rhubarb -r phonetic --extendedShapes X -f json -o storage/staged/mouth-cues.json storage/staged/voice.wav`
 * The default PocketSphinx engine is optimized for English words and stalls on Russian phonetics. `-r phonetic` works on raw sounds/syllables and maps visemes A–F and X across any language. (There is no `-r sound` in Rhubarb — the binary rejects it.) `--extendedShapes X` limits output to the registered sprite set.
-* Word-level caption timings for our own narration come from edge-tts WordBoundary events (`scripts/tts.py` → `captions.json`), never from a second Whisper pass.
-* Standardize all voice output: 16 kHz sample rate, single channel (mono), 16-bit PCM WAV.
+* TTS is pluggable (`src/modules/synthesis/providers/`), selected per preset in `config/app.config.json` → `voice.presets[*].provider`:
+  * `edge` — free, ru-RU-DmitryNeural/SvetlanaNeural, word timings from WordBoundary events (`scripts/tts.py`). Unofficial endpoint; default for tests.
+  * `yandex` — SpeechKit v1 REST (`YANDEX_API_KEY`, `YANDEX_FOLDER_ID`), best Russian prosody, ~1 RUB per reel. No timings.
+  * `piper` — offline, MIT, `assets/voices/*.onnx`. Free and licence-clean; flatter voice. No timings.
+  * `elevenlabs` — premium, `with-timestamps` endpoint gives character-level timings.
+* Word-level caption timings come from the engine when it has them (edge, elevenlabs). Otherwise `align.ts` runs faster-whisper on **our** `voice.wav` and aligns the known script text to it (Needleman–Wunsch on normalized tokens, interpolation for gaps). Never guess timings from words-per-second in production output.
+* Standardize all voice output: 16 kHz sample rate, single channel (mono), 16-bit PCM WAV, `loudnorm I=-16`.
 
 ### Remotion Server-Side Constraints
 
@@ -124,11 +135,15 @@ against it — the orchestrator refuses to render otherwise.
 4. Save the full payload to `storage/staged/manifest.json`.
 
 ### Step 3 — Audio Synthesis & Acoustic Lip Sync
-1. `python3 scripts/tts.py --text "<narration>" --voice ru-RU-DmitryNeural --out-audio storage/staged/voice.mp3 --out-words storage/staged/captions.json`
-   (edge-tts Python API; captures WordBoundary events → exact per-word timings)
-2. `ffmpeg -y -i storage/staged/voice.mp3 -af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 16000 -ac 1 -c:a pcm_s16le storage/staged/voice.wav`
-3. `rhubarb -r phonetic --extendedShapes X -f json -o storage/staged/mouth-cues.json storage/staged/voice.wav`
-4. Rewrite `manifest.json`: `script.captions` ← captions.json, `script.estimatedDuration` ← ffprobe(voice.wav), `videoConfig.timeline` ← recomputed from real timings.
+1. `synthesizeVoice()` picks the provider from `voice.defaultPreset` and writes `storage/staged/voice.raw.*`:
+   * edge: `python3 scripts/tts.py --text "<narration>" --voice ru-RU-DmitryNeural --out-audio … --out-words storage/staged/captions.json`
+   * yandex: `POST https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize` (lpcm 48 kHz)
+   * piper: `piper --model assets/voices/ru_RU-irina-medium.onnx --output_file …`
+   * elevenlabs: `POST /v1/text-to-speech/{voice}/with-timestamps`
+2. `ffmpeg -y [-f s16le -ar 48000 -ac 1] -i <raw> -af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 16000 -ac 1 -c:a pcm_s16le storage/staged/voice.wav`
+3. Captions: engine timings if present, else `align.ts` → `python3 scripts/transcribe.py voice.wav --model small` → aligned to the script text → `captions.json`.
+4. `rhubarb -r phonetic --extendedShapes X -f json -o storage/staged/mouth-cues.json storage/staged/voice.wav`
+5. Rewrite `manifest.json`: `script.captions` ← captions.json, `script.estimatedDuration` ← ffprobe(voice.wav), `videoConfig.timeline` ← recomputed from real timings.
 
 ### Step 4 — Video Compilation (Remotion)
 1. Stage `storage/staged/public/` (voice.wav, mouth-cues.json, sprites, b-roll, music, fonts) — the orchestrator does this.
@@ -163,10 +178,15 @@ Before finishing any task or script modification, ensure:
 ## 7. Repository Commands
 
 ```bash
-npm run doctor      # verify system binaries, fonts, sprites and config
-npm run intel       # Step 1: competitor parsing -> storage/raw/topics.json
-npm run produce     # Steps 2-5: manifest -> voice -> visemes -> reel -> carousel
-npm run publish     # Step 6: push artifacts to Postiz
-npm run run:full    # intel + produce + publish
-npm run typecheck   # strict TS contract check
+npm run doctor              # verify system binaries, fonts, sprites, voice provider and config
+npm run intel               # Step 1: competitor parsing -> storage/raw/topics.json
+npm run produce             # Steps 2-5: manifest -> voice -> visemes -> reel -> carousel
+npm run publish             # Step 6: push artifacts to Postiz
+npm run run:full            # intel + produce + publish
+npm run typecheck           # strict TS contract check
+npm run sprites:placeholder # flat placeholder sprite set for a character
+npm run sprites:prepare -- default art.png --pose pointing [--mood happy]   # intake -> candidate + preview
+npm run sprites:prepare -- default --approve --pose pointing              # register the candidate
+npm run sprites:generate -- default --pose holding_laptop [--approve]    # on-model generation (OPENAI/GEMINI key)
+npm run sprites:generate -- default --from-requests                      # everything scripts asked for
 ```

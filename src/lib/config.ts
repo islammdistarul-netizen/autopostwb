@@ -45,16 +45,20 @@ export const AppConfigSchema = z.object({
     }),
   }),
   voice: z.object({
+    /** Default TTS engine; a preset may override it. */
+    provider: z.enum(['edge', 'yandex', 'piper', 'elevenlabs']).default('edge'),
     presets: z.record(
       z.string(),
       z.object({
+        provider: z.enum(['edge', 'yandex', 'piper', 'elevenlabs']).optional(),
         voice: z.string().min(1),
-        rate: z.string(),
-        pitch: z.string(),
-        volume: z.string(),
+        /** Provider-specific knobs: edge rate/pitch/volume, yandex speed/emotion, piper length_scale, elevenlabs model/stability. */
+        options: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
       }),
     ),
     defaultPreset: z.string().min(1),
+    /** faster-whisper model used to align captions for engines without word timings. */
+    alignModel: z.string().min(1).default('small'),
     sampleRate: z.number().int().positive(),
     channels: z.number().int().positive(),
   }),

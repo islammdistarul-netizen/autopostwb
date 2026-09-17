@@ -1,18 +1,27 @@
-# Self-hosted Postiz next to the factory. Based on the official compose from
-# https://docs.postiz.com/installation/docker-compose — check that page when
-# upgrading; env names below are the ones the app reads today.
+# Self-hosted Postiz next to the factory.
 #
-#   cp deploy/postiz/.env.example deploy/postiz/.env   # fill in domain + secrets
+# Pin the image: POSTIZ_IMAGE_TAG in deploy/postiz/.env (ghcr had v2.23.0 as the
+# newest release when this file was written). Postiz added a Temporal-based
+# workflow engine in the 2.x line; releases that require it will not start
+# without the `temporal` services below. They are behind the "temporal" compose
+# profile: enable them with `--profile temporal` if the app logs complain about
+# TEMPORAL_ADDRESS / cannot connect to temporal, and budget ~1.5-2 GB extra RAM.
+# Cross-check env names against https://docs.postiz.com/installation/docker-compose
+# for the exact tag you run.
+#
+#   cp deploy/postiz/.env.example deploy/postiz/.env   # domain + secrets + tag
 #   docker compose --env-file deploy/postiz/.env -f deploy/postiz/docker-compose.yml up -d
-#   open https://<POSTIZ_DOMAIN>  -> create the owner account, connect channels,
-#   Settings -> Public API -> copy the key into the factory's .env (POSTIZ_API_KEY)
+#   # or, for a Temporal-era release:
+#   docker compose --env-file deploy/postiz/.env -f deploy/postiz/docker-compose.yml --profile temporal up -d
 #
 # The factory calls http://localhost:5000/api/public/v1 (same box). Instagram/TikTok
-# fetch media FROM Postiz, so Postiz itself must be reachable on a public HTTPS
-# domain (Caddy/nginx in front of :5000) even though the factory talks to it locally.
+# fetch media FROM Postiz, so Postiz must be reachable on a public HTTPS domain
+# (Caddy/nginx in front of :5000) even though the factory talks to it locally.
+# From a Russian IP, Meta/TikTok API calls need an outbound proxy for the
+# postiz container (HTTPS_PROXY below) or a server located elsewhere.
 services:
   postiz:
-    image: ghcr.io/gitroomhq/postiz-app:latest
+    image: ghcr.io/gitroomhq/postiz-app:${POSTIZ_IMAGE_TAG:-latest}
     container_name: postiz
     restart: always
     environment:
@@ -23,11 +32,16 @@ services:
       JWT_SECRET: "${POSTIZ_JWT_SECRET}"
       DATABASE_URL: "postgresql://postiz:${POSTIZ_DB_PASSWORD}@postiz-postgres:5432/postiz"
       REDIS_URL: "redis://postiz-redis:6379"
+      TEMPORAL_ADDRESS: "${POSTIZ_TEMPORAL_ADDRESS:-postiz-temporal:7233}"
       IS_GENERAL: "true"
       DISABLE_REGISTRATION: "${POSTIZ_DISABLE_REGISTRATION:-false}"
       STORAGE_PROVIDER: "local"
       UPLOAD_DIRECTORY: "/uploads"
       NEXT_PUBLIC_UPLOAD_DIRECTORY: "/uploads"
+      # Optional egress proxy for provider APIs (Meta/TikTok from RU IPs)
+      HTTPS_PROXY: "${POSTIZ_HTTPS_PROXY:-}"
+      HTTP_PROXY: "${POSTIZ_HTTPS_PROXY:-}"
+      NO_PROXY: "localhost,127.0.0.1,postiz-postgres,postiz-redis,postiz-temporal"
       # Provider OAuth apps (fill the ones you connect; leave others empty)
       YOUTUBE_CLIENT_ID: "${YOUTUBE_CLIENT_ID:-}"
       YOUTUBE_CLIENT_SECRET: "${YOUTUBE_CLIENT_SECRET:-}"
@@ -80,8 +94,36 @@ services:
       timeout: 3s
       retries: 5
 
+  # --- Temporal (only for Postiz releases that require it) ---
+  postiz-temporal-postgres:
+    profiles: ["temporal"]
+    image: postgres:17-alpine
+    container_name: postiz-temporal-postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - postiz-temporal-postgres:/var/lib/postgresql/data
+
+  postiz-temporal:
+    profiles: ["temporal"]
+    image: temporalio/auto-setup:1.25
+    container_name: postiz-temporal
+    restart: always
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postiz-temporal-postgres
+    depends_on:
+      - postiz-temporal-postgres
+
 volumes:
   postiz-config:
   postiz-uploads:
   postiz-postgres:
   postiz-redis:
+  postiz-temporal-postgres:

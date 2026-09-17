@@ -17,7 +17,9 @@
     "carousel": "tsx src/pipeline/cli.ts carousel",
     "studio": "remotion studio src/modules/video/Root.tsx",
     "render": "remotion render src/modules/video/Root.tsx ReelComposition storage/artifacts/final_reel.mp4 --props=storage/staged/manifest.json --concurrency=2 --gl=angle",
-    "sprites:placeholder": "tsx scripts/make-placeholder-sprites.ts"
+    "sprites:placeholder": "tsx scripts/make-placeholder-sprites.ts",
+    "sprites:prepare": "tsx scripts/prepare-sprites.ts",
+    "sprites:generate": "tsx scripts/generate-sprite.ts"
   },
   "dependencies": {
     "@remotion/bundler": "^4.0.0",
@@ -30,6 +32,7 @@
     "react-dom": "^18.3.1",
     "remotion": "^4.0.0",
     "satori": "^0.12.1",
+    "sharp": "^0.35.4",
     "zod": "^4.5.4"
   },
   "devDependencies": {

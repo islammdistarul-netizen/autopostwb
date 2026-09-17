@@ -1,9 +1,14 @@
 {
   "id": "default",
   "name": "Expert Host",
+  "mode": "layered",
   "canvas": {
     "width": 1080,
     "height": 1920
+  },
+  "spriteCanvas": {
+    "width": 720,
+    "height": 960
   },
   "sprite": {
     "anchor": {
@@ -16,6 +21,11 @@
       "stiffness": 140,
       "damping": 14
     }
+  },
+  "motion": {
+    "blinkEverySeconds": 4,
+    "blinkFrames": 3,
+    "breathe": true
   },
   "layers": {
     "bodies": {
@@ -53,6 +63,32 @@
       "F": "mouth_F.png",
       "X": "mouth_X.png",
       "closed": "mouth_closed.png"
+    },
+    "blink": {
+      "dir": "faces",
+      "file": "eyes_closed.png",
+      "offset": {
+        "x": 0,
+        "y": -180
+      },
+      "scale": 1.0
+    }
+  },
+  "generation": {
+    "reference": "reference.png",
+    "stylePrompt": "Flat 2D vector cartoon illustration, clean bold outlines, simple cel shading, limited palette, friendly nutrition-expert character, no gradients, no photorealism.",
+    "posePrompts": {
+      "idle": "standing relaxed, arms down at the sides",
+      "pointing": "right arm extended, index finger pointing straight at the viewer",
+      "thinking": "right hand on the chin, head slightly tilted",
+      "shocked": "both hands raised beside the head, palms open",
+      "hands_on_hips": "both hands on the hips, confident stance"
+    },
+    "moodPrompts": {
+      "neutral": "neutral facial expression, mouth closed",
+      "happy": "warm smile, eyes slightly squinted, mouth closed",
+      "skeptical": "one eyebrow raised, slight smirk, mouth closed",
+      "surprised": "eyes wide open, eyebrows high, mouth closed"
     }
   }
 }

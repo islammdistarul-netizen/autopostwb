@@ -4,9 +4,12 @@ import { log } from '../lib/log.ts';
 import { loadAppConfig, loadPostizConfig } from '../lib/config.ts';
 import { paths } from '../lib/paths.ts';
 import { run, which } from '../lib/shell.ts';
-import { CharacterDefinitionSchema } from '../types/avatar.ts';
+import { CharacterDefinitionSchema, characterProblems, listCharacterSprites, registeredMoods, registeredPoses } from '../types/avatar.ts';
 import { verifyCyrillicFonts } from '../modules/carousel/compiler.ts';
 import { PostizClient } from '../modules/distribution/postiz.client.ts';
+import { listSpriteRequests } from '../modules/avatar/sprites.ts';
+import { getVoiceProvider } from '../modules/synthesis/providers/index.ts';
+import { resolveVoicePreset } from '../lib/config.ts';
 
 /**
  * Environment verification. Every check maps to a concrete fix, so a fresh
@@ -49,26 +52,34 @@ function characterSprites(): Check[] {
     if (!fs.existsSync(jsonPath)) continue;
     const parsed = CharacterDefinitionSchema.safeParse(JSON.parse(fs.readFileSync(jsonPath, 'utf8')));
     if (!parsed.success) {
-      checks.push({ name: `character:${id}`, ok: false, detail: parsed.error.issues[0]?.message ?? 'invalid', fix: 'Fix character.json' });
+      checks.push({ name: `character:${id}`, ok: false, detail: `${parsed.error.issues[0]?.path.join('.')}: ${parsed.error.issues[0]?.message ?? 'invalid'}`, fix: 'Fix character.json' });
       continue;
     }
-    const missing: string[] = [];
-    const { bodies, faces, mouths } = parsed.data.layers;
-    const expect = (layerDir: string, entries: Record<string, unknown>) => {
-      for (const [key, file] of Object.entries(entries)) {
-        if (['dir', 'offset', 'scale'].includes(key)) continue;
-        if (!fs.existsSync(path.join(dir, layerDir, String(file)))) missing.push(`${layerDir}/${String(file)}`);
-      }
-    };
-    expect(bodies.dir, bodies);
-    expect(faces.dir, faces);
-    expect(mouths.dir, mouths);
+    const problems = characterProblems(parsed.data);
+    const missing = listCharacterSprites(parsed.data).filter((rel) => !fs.existsSync(path.join(dir, rel)));
+    const poses = registeredPoses(parsed.data).length;
+    const moods = registeredMoods(parsed.data).length;
     checks.push({
       name: `character:${id}`,
-      ok: missing.length === 0,
-      detail: missing.length ? `missing ${missing.length} sprite(s): ${missing.slice(0, 4).join(', ')}${missing.length > 4 ? '…' : ''}` : 'all sprites present',
-      fix: 'npm run sprites:placeholder (then replace with real art)',
+      ok: missing.length === 0 && problems.length === 0,
+      detail:
+        problems.length
+          ? problems.join('; ')
+          : missing.length
+            ? `missing ${missing.length} sprite(s): ${missing.slice(0, 4).join(', ')}${missing.length > 4 ? '…' : ''}`
+            : `${parsed.data.mode}, ${poses} pose(s), ${moods} mood(s), all sprites present`,
+      fix: 'npm run sprites:placeholder, or prepare/register the missing art (scripts/prepare-sprites.ts)',
     });
+    const pending = listSpriteRequests(id);
+    if (pending.length) {
+      checks.push({
+        name: `character:${id}:requests`,
+        ok: false,
+        optional: true,
+        detail: `${pending.length} pose(s) requested by scripts: ${pending.map((r) => r.pose).slice(0, 5).join(', ')}`,
+        fix: `npx tsx scripts/generate-sprite.ts ${id} --from-requests`,
+      });
+    }
   }
   return checks;
 }
@@ -140,8 +151,26 @@ export async function runDoctor(options: { postiz?: boolean } = {}): Promise<Che
   checks.push(await binary('rhubarb', 'scripts/setup-server.sh'));
   checks.push(await rhubarbRecognizer());
   checks.push(await binary('python3', 'apt install python3'));
-  checks.push(await pyModule('edge_tts', 'pip3 install edge-tts'));
   checks.push(await pyModule('faster_whisper', 'pip3 install faster-whisper'));
+  // Active voice provider (per default preset) must be runnable; the others are informational.
+  try {
+    const cfg = loadAppConfig();
+    const preset = resolveVoicePreset(cfg);
+    const providerId = preset.provider ?? cfg.voice.provider;
+    try {
+      await getVoiceProvider(providerId).assertReady();
+      checks.push({ name: `voice:${providerId}`, ok: true, detail: `preset "${cfg.voice.defaultPreset}" -> ${preset.voice}` });
+    } catch (err) {
+      checks.push({ name: `voice:${providerId}`, ok: false, detail: (err as Error).message, fix: 'Install/configure the provider or switch voice.defaultPreset' });
+    }
+    if (providerId === 'yandex' || providerId === 'piper') {
+      const ok = (await run('python3', ['-c', 'import faster_whisper'], { allowFailure: true })).code === 0;
+      checks.push({ name: 'voice:align', ok, detail: ok ? `whisper "${cfg.voice.alignModel}" aligns captions` : 'faster-whisper needed for caption alignment', fix: 'pip3 install faster-whisper' });
+    }
+  } catch {
+    // config failure already reported above
+  }
+  checks.push(await pyModule('rembg', 'pip3 install "rembg[cpu]"  (only for sprite intake)').then((c) => ({ ...c, optional: true })));
   checks.push(await binary('claude', 'npm i -g @anthropic-ai/claude-code  (or CF_SCRIPT_PROVIDER=template)', true));
   checks.push(await binary('docker', 'Postiz runs via docker compose', true));
 

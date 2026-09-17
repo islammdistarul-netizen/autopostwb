@@ -1,42 +1,37 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { run, which } from '../../lib/shell.ts';
 import { log } from '../../lib/log.ts';
-import { assertWritable, files, paths, readJson } from '../../lib/paths.ts';
+import { assertWritable, files, writeJson } from '../../lib/paths.ts';
 import { resolveVoicePreset, type AppConfig } from '../../lib/config.ts';
 import type { TimedCaptionWord } from '../../types/manifest.ts';
+import { getVoiceProvider } from './providers/index.ts';
+import { alignWithWhisper } from './align.ts';
 
 /**
- * edge-tts neural voice synthesis (ru-RU-DmitryNeural / ru-RU-SvetlanaNeural).
- *
- * Goes through scripts/tts.py rather than the edge-tts CLI so we get the
- * WordBoundary stream: exact per-word timings for the karaoke captions without a
- * second Whisper pass over our own audio.
- *
- * Output is always normalized to 16 kHz mono 16-bit PCM WAV — the single format
- * Rhubarb, faster-whisper and Remotion's audio layer all agree on.
+ * Voice synthesis front door. Picks the provider from the preset
+ * (config.voice.presets[name].provider, default config.voice.provider),
+ * normalizes whatever it returns to 16 kHz mono 16-bit PCM WAV, and guarantees
+ * per-word captions: from the engine when it has them (edge, elevenlabs),
+ * otherwise by whisper alignment against the script text (yandex, piper).
  */
 
 export interface VoiceResult {
-  mp3Path: string;
   wavPath: string;
+  rawAudioPath: string;
   durationSeconds: number;
+  provider: string;
   voice: string;
-  /** Word timings straight from the TTS engine. */
   captions: TimedCaptionWord[];
+  captionSource: 'engine' | 'whisper-aligned';
 }
 
-const TTS_TIMEOUT_MS = 5 * 60 * 1000;
-const TTS_SCRIPT = path.join(paths.root, 'scripts', 'tts.py');
-
-export async function assertVoiceTooling(): Promise<void> {
+export async function assertVoiceTooling(config: AppConfig, presetName?: string): Promise<void> {
   const missing: string[] = [];
-  if (!(await which('python3'))) missing.push('python3');
-  const probe = await run('python3', ['-c', 'import edge_tts'], { allowFailure: true });
-  if (probe.code !== 0) missing.push('edge-tts python package (pip3 install edge-tts)');
   if (!(await which('ffmpeg'))) missing.push('ffmpeg (apt install ffmpeg)');
   if (!(await which('ffprobe'))) missing.push('ffprobe (ships with ffmpeg)');
   if (missing.length) throw new Error(`Voice tooling missing: ${missing.join(', ')}`);
+  const preset = resolveVoicePreset(config, presetName);
+  await getVoiceProvider(preset.provider ?? config.voice.provider).assertReady();
 }
 
 /** Duration in seconds via ffprobe — the value calculateMetadata() derives frame count from. */
@@ -59,7 +54,6 @@ export async function probeDuration(mediaPath: string): Promise<number> {
 
 export interface SynthesizeOptions {
   preset?: string;
-  mp3Path?: string;
   wavPath?: string;
   captionsPath?: string;
 }
@@ -73,45 +67,31 @@ export async function synthesizeVoice(
   if (!narration) throw new Error('Cannot synthesize empty narration.');
 
   const preset = resolveVoicePreset(config, options.preset);
-  const mp3Path = assertWritable(options.mp3Path ?? files.voiceMp3);
+  const providerId = preset.provider ?? config.voice.provider;
+  const provider = getVoiceProvider(providerId);
+  await provider.assertReady();
+
   const wavPath = assertWritable(options.wavPath ?? files.voiceWav);
   const captionsPath = assertWritable(options.captionsPath ?? files.captions);
+  const outBase = wavPath.replace(/\.wav$/, '.raw');
 
-  log.step(`Voice synthesis (${preset.voice})`);
+  log.step(`Voice synthesis: ${providerId} / ${preset.voice}`);
+  const output = await provider.synthesize({
+    text: narration,
+    voice: preset.voice,
+    options: preset.options,
+    outBase,
+  });
 
-  await run(
-    'python3',
-    [
-      TTS_SCRIPT,
-      '--text',
-      narration,
-      '--voice',
-      preset.voice,
-      '--rate',
-      preset.rate,
-      '--pitch',
-      preset.pitch,
-      '--volume',
-      preset.volume,
-      '--out-audio',
-      mp3Path,
-      '--out-words',
-      captionsPath,
-    ],
-    { timeoutMs: TTS_TIMEOUT_MS },
-  );
-  if (!fs.existsSync(mp3Path) || fs.statSync(mp3Path).size === 0) {
-    throw new Error('edge-tts finished but produced no audio. Check network access to Microsoft TTS endpoints.');
-  }
-
-  // ffmpeg -y -i voice.mp3 -ar 16000 -ac 1 voice.wav (+ explicit 16-bit PCM and loudness normalization)
+  // Normalize to the one format Rhubarb, whisper and Remotion all agree on.
   await run('ffmpeg', [
     '-y',
     '-hide_banner',
     '-loglevel',
     'error',
+    ...(output.ffmpegInputArgs ?? []),
     '-i',
-    mp3Path,
+    output.audioPath,
     '-af',
     'loudnorm=I=-16:TP=-1.5:LRA=11',
     '-ar',
@@ -122,14 +102,28 @@ export async function synthesizeVoice(
     'pcm_s16le',
     wavPath,
   ]);
-
   const durationSeconds = await probeDuration(wavPath);
-  const captions = readJson<TimedCaptionWord[]>(captionsPath).filter((w) => w.end > w.start);
+
+  let captions: TimedCaptionWord[];
+  let captionSource: VoiceResult['captionSource'];
+  if (output.captions && output.captions.length > 0) {
+    captions = output.captions;
+    captionSource = 'engine';
+  } else {
+    // A stale alignment from the previous run would silently mistime everything.
+    const stale = wavPath.replace(/\.wav$/, '.align.json');
+    if (fs.existsSync(stale)) fs.unlinkSync(stale);
+    log.info('provider has no word timings; aligning with whisper', { model: config.voice.alignModel });
+    captions = await alignWithWhisper(narration, wavPath, durationSeconds, config);
+    captionSource = 'whisper-aligned';
+  }
+  writeJson(captionsPath, captions);
+
   log.info('voice ready', {
-    wav: wavPath,
+    provider: providerId,
     seconds: Number(durationSeconds.toFixed(2)),
     words: captions.length,
+    captions: captionSource,
   });
-
-  return { mp3Path, wavPath, durationSeconds, voice: preset.voice, captions };
+  return { wavPath, rawAudioPath: output.audioPath, durationSeconds, provider: providerId, voice: preset.voice, captions, captionSource };
 }

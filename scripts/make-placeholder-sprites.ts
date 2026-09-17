@@ -97,7 +97,19 @@ function mouth(shape: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120">${shapes[shape] ?? shapes.X}</svg>`;
 }
 
-const { bodies, faces, mouths } = character.layers;
+// Eyes-closed overlay for the deterministic blink schedule (same canvas as faces).
+function blinkOverlay(): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="380" height="260" viewBox="0 0 380 260">
+  <ellipse cx="120" cy="150" rx="34" ry="30" fill="${SKIN}"/><ellipse cx="260" cy="150" rx="34" ry="30" fill="${SKIN}"/>
+  <path d="M90 152 Q120 168 150 152" stroke="${DARK}" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <path d="M230 152 Q260 168 290 152" stroke="${DARK}" stroke-width="10" fill="none" stroke-linecap="round"/>
+</svg>`;
+}
+
+const { bodies, faces, mouths, blink } = character.layers as typeof character.layers & {
+  blink?: { dir: string; file: string };
+};
+if (blink) png(blinkOverlay(), path.join(dir, blink.dir, blink.file));
 for (const [key, file] of Object.entries(bodies)) {
   if (key === 'dir') continue;
   png(body(key), path.join(dir, bodies.dir!, file));
