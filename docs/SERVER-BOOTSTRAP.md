@@ -19,7 +19,7 @@ claude
 Прочитай CLAUDE.md, README.md, docs/PLAN.md и docs/AVATAR.md. Это готовый контент-завод; код собран и проверен, но на этом сервере ещё ничего не установлено.
 
 Сделай по порядку, после каждого шага показывай результат и останавливайся при FAIL:
-1. `sudo bash scripts/setup-server.sh` — системные зависимости, python-пакеты, rhubarb, piper, rembg, шрифты, swap, npm install.
+1. Сначала `free -h` и `docker stats --no-stream` — покажи, сколько памяти занимает Coolify. Затем `SWAP_GB=8 sudo bash scripts/setup-server.sh` — системные зависимости, python-пакеты, rhubarb, piper, rembg, шрифты, swap, npm install. В config/app.config.json поставь video.concurrency=1 и voice.alignModel="base" (сервер делит 8 GB с Coolify).
 2. `cp .env.example .env` и спроси меня значения: CF_BRAND_HANDLE, YANDEX_API_KEY, YANDEX_FOLDER_ID (если есть), PEXELS_API_KEY (если есть). POSTIZ_API_KEY — позже.
 3. `npm run doctor` — разбери каждый FAIL и исправь. Если Remotion не может скачать chrome-headless-shell (403 remotion.media), поставь его через `npx playwright install chromium-headless-shell` и пропиши CF_BROWSER_EXECUTABLE в .env.
 4. `npm run sprites:placeholder`; фоны через `scripts/fetch-broll.sh` (если есть PEXELS_API_KEY), иначе попроси меня положить 2–3 вертикальных mp4 в assets/b-roll; музыку — `scripts/normalize-music.sh`.
@@ -30,6 +30,26 @@ claude
 
 Правила: не трогай CLAUDE.md без моего согласия; ничего не публикуй (publish только с --dry-run), пока я не скажу; все изменения кода — коммить в ветку claude/eloquent-lamport-pxecqs.
 ```
+
+## 2a. Сервер с Coolify (4 vCPU / 8 GB, ~5 GB уже занято)
+
+Coolify держит Docker, Traefik (80/443), свою БД и Redis — обычно 1.5–2.5 GB. Из этого следует:
+
+**Память.** Конвейеру остаётся ~3 GB, поэтому на этом сервере:
+
+```bash
+SWAP_GB=8 sudo bash scripts/setup-server.sh          # swap 8G вместо 4G (NVMe, место есть)
+```
+и в `config/app.config.json`: `video.concurrency: 1` (рендер ~90 с вместо ~45 — приемлемо), `voice.alignModel: "base"`, `intelligence.whisperModel: "small"`. `deploy/autopostwb.service` уже с `MemoryMax=4G`. Перед первым рендером посмотреть, что реально ест память, и остановить лишнее:
+
+```bash
+free -h && docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}'
+```
+Если после этого свободно меньше 2.5 GB — честнее апгрейдить VPS до 16 GB, чем бороться со swap: рендер и Whisper на диске замедляются в разы.
+
+**Postiz — через Coolify, а не через наш compose.** В Coolify: Projects → New Resource → Services → **Postiz** (есть в каталоге), указать домен (A-запись на 205.172.56.136 сделать заранее) — HTTPS выдаст Traefik сам. `deploy/postiz/docker-compose.yml` и Caddy на этом сервере **не использовать** (порты 80/443 заняты Traefik). Переменные провайдеров (YouTube/Telegram/VK ключи) задаются в Environment Variables сервиса в Coolify. После запуска: зарегистрировать владельца → Settings → Public API → ключ в `.env`, и в `config/postiz.config.json` поставить `"host": "https://postiz.ваш-домен"` (не `localhost:5000` — порт наружу Coolify не пробрасывает).
+
+**Регион US** — прокси для Instagram/TikTok не нужен, `POSTIZ_HTTPS_PROXY` пустой. Для YouTube-разведки на датацентровом IP держите наготове `YTDLP_COOKIES`.
 
 ## 3. Что понадобится по ходу
 

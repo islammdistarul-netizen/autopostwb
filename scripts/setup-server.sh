@@ -34,9 +34,10 @@ apt-get install -y -qq \
   fonts-liberation xdg-utils
 
 # ---------------------------------------------------------------------------
-log "Swap 4G (Remotion + whisper peaks on an 8 GB box)"
+SWAP_GB="${SWAP_GB:-4}"
+log "Swap ${SWAP_GB}G (Remotion + whisper peaks on an 8 GB box; SWAP_GB=8 when Coolify/Docker share the host)"
 if ! swapon --show | grep -q '/swapfile' && [[ ! -f /swapfile ]]; then
-  fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
+  fallocate -l "${SWAP_GB}G" /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 free -h | sed -n '1,3p'

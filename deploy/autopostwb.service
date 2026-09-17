@@ -23,5 +23,6 @@ ExecStart=/usr/bin/bash /opt/autopostwb/deploy/run-cycle.sh
 # A cycle is ~5-15 min (scrape + TTS + render). Kill anything wedged well before the next slot.
 TimeoutStartSec=45min
 Nice=5
-# Remotion (2 workers) + whisper comfortably fit in 6 GB; cap so a leak can't take the box down.
-MemoryMax=6G
+# Remotion + whisper fit in 4 GB with video.concurrency=1; cap so a leak can't take the box down.
+# Raise to 6G on a box without Coolify/Docker neighbours.
+MemoryMax=4G
